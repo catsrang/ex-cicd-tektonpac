@@ -17,3 +17,4 @@ and phase-by-phase implementation log.
 
 (Phase 8 retest commit, after adding app-repo to the App's installation.)
 (retest after creating Repository CR for deploy-repo)
+(retest after disabling secret-github-app-token-scoped)
