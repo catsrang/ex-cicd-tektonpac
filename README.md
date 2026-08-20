@@ -14,3 +14,5 @@ Example Spring Boot (Java/Maven) application demonstrating a Tekton
 
 See `topic/20260820-1_init_tekton_cicd_example/` for the full spec, plan,
 and phase-by-phase implementation log.
+
+(Phase 8 retest commit, after adding app-repo to the App's installation.)
