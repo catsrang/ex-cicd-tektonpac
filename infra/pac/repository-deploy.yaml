@@ -1,0 +1,16 @@
+# Phase 8 fix: PAC's github_app_token_scope_repos validation (used by
+# ex-cicd-tektonpac's Repository CR, see repository.yaml) requires every
+# scoped repo to have its own Repository CR in the same namespace — not
+# just be named in the scope_repos list. Without this, every event on
+# ex-cicd-tektonpac fails at token-scoping with "failed to scope GitHub
+# token as repo with pattern catsrang/ex-cicd-tektonpac-deploy does not
+# exist in namespace cicd-demo". This CR exists only to satisfy that
+# check; ex-cicd-tektonpac-deploy has no .tekton/ files and isn't meant
+# to trigger its own PipelineRuns.
+apiVersion: pipelinesascode.tekton.dev/v1alpha1
+kind: Repository
+metadata:
+  name: ex-cicd-tektonpac-deploy
+  namespace: cicd-demo
+spec:
+  url: "https://github.com/catsrang/ex-cicd-tektonpac-deploy"
