@@ -1,0 +1,31 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: update-deployment-tag
+spec:
+  params:
+    - name: deployment-repo-url
+    - name: image-tag
+  workspaces:
+    - name: basic-auth
+  steps:
+    - name: update-and-push
+      image: registry.access.redhat.com/ubi9/ubi-minimal
+      env:
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: "{{ git_auth_secret }}"
+              key: git-provider-token
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        microdnf install -y git yq >/dev/null
+        REPO_DIR=$(mktemp -d)
+        git clone "https://x-access-token:${GITHUB_TOKEN}@$(echo $(params.deployment-repo-url) | sed 's#https://##')" "$REPO_DIR"
+        cd "$REPO_DIR"
+        yq -i '.image.tag = "$(params.image-tag)"' charts/demo-app/values.yaml
+        git config user.email "pac-bot@example.com"
+        git config user.name "pac-bot"
+        git commit -am "chore: bump demo-app image tag to $(params.image-tag)"
+        git push origin main

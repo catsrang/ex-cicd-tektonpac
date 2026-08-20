@@ -1,0 +1,19 @@
+# Phase 4: Repository CR registering catsrang/ex-cicd-tektonpac with PAC.
+# Routes incoming GitHub events for this repo to PipelineRuns in the
+# cicd-demo namespace. See topic/20260820-1_init_tekton_cicd_example/20.plan.md
+# Phase 4 for the settings rationale.
+apiVersion: pipelinesascode.tekton.dev/v1alpha1
+kind: Repository
+metadata:
+  name: ex-cicd-tektonpac
+  namespace: cicd-demo
+spec:
+  url: "https://github.com/catsrang/ex-cicd-tektonpac"
+  settings:
+    # Resolve .tekton/ from the main branch, not the PR head — prevents a
+    # malicious fork PR from shipping its own pipeline definition.
+    pipelinerun_provenance: default_branch
+    # Lets the push pipeline's installation token write to deployment-repo
+    # (the triggering repo, ex-cicd-tektonpac, is scoped in automatically).
+    github_app_token_scope_repos:
+      - catsrang/ex-cicd-tektonpac-deploy

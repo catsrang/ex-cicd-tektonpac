@@ -1,0 +1,30 @@
+# Real Ingress for PAC webhook delivery (Phase 1 decision: chosen over gosmee,
+# since this k3s cluster is already proven internet-reachable — see
+# tekton-pipelines/tekton-dashboard's existing Ingress on the same host).
+#
+# The controller ignores request path (verified: it returns 200 on any path),
+# so it safely shares the host with the dashboard's "/" Ingress via a more
+# specific "/pac" path prefix — Traefik routes the longer prefix match first.
+#
+# GitHub App Webhook URL (Phase 2) should be set to: https://bless2k.duckdns.org/pac
+# Caveat: this host only has Traefik's default self-signed cert (no cert-manager
+# installed in-cluster) — either disable "SSL verification" on the GitHub App,
+# or set up a real cert before relying on this in a non-demo setting.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pipelines-as-code-controller
+  namespace: pipelines-as-code
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: bless2k.duckdns.org
+      http:
+        paths:
+          - path: /pac
+            pathType: Prefix
+            backend:
+              service:
+                name: pipelines-as-code-controller
+                port:
+                  number: 8080

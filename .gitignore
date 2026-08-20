@@ -1,0 +1,11 @@
+# GitHub App private keys / secrets — never commit these
+*.pem
+*.key
+.env
+.env.*
+
+# Maven
+target/
+
+# OS
+.DS_Store
