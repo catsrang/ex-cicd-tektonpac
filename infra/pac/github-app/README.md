@@ -75,7 +75,12 @@ directly — skip the manual steps below if you use this path.
 - ✅ `kubectl -n pipelines-as-code get secret pipelines-as-code-secret` shows
   the secret with keys `github-private-key`, `github-application-id`,
   `webhook.secret`.
-- ✅ App is installed on this repo (`ex-cicd-tektonpac`).
+- ✅ App is installed on this repo (`ex-cicd-tektonpac`) **and actually has
+  it in its repository-access list** — see the correction below. Checking
+  "installed" alone was not sufficient; verify via
+  `https://github.com/settings/installations` → Configure → the repo
+  appears under "Repository access", not just via the repo's own
+  installations page.
 
 ## Status
 **Complete.** Executed via Option A (`tkn-pac bootstrap github-app`) against
@@ -89,6 +94,17 @@ re-running with rotated credentials.
 
 SSL verification has been disabled on the App's webhook settings (self-signed
 cert on `bless2k.duckdns.org` is no longer a blocker for webhook delivery).
+
+**Correction (found in Phase 8, same day):** the "App installed on this
+repo" claim above was recorded as done here, but was actually **wrong**
+at the time — Phase 8 found zero webhook deliveries for `ex-cicd-tektonpac`
+and traced it to the App's repository-access list not actually including
+this repo (most likely dropped when Phase 3 later added
+`ex-cicd-tektonpac-deploy` to the same installation via "Configure" →
+"Select repositories", which can silently replace rather than extend the
+list). Re-confirmed and fixed in Phase 8 — see `30.impl.md` Phase 8 and
+`IMPL_GUIDE.md`'s Gotcha #1 for the full diagnosis and the check that
+would have caught this immediately.
 
 Still open (non-blocking for this phase, needed before later phases):
 - Private key rotation recommended but not done — an earlier verification

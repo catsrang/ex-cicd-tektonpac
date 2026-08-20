@@ -406,12 +406,21 @@ Because `microdnf` resolves the whole install atomically, this also means
 download the static `yq` binary directly:
 ```bash
 microdnf install -y git
-curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+curl -sL "https://github.com/mikefarah/yq/releases/download/v4.53.4/yq_linux_amd64" -o /usr/local/bin/yq
 chmod +x /usr/local/bin/yq
 ```
 (Check your node's architecture first — `kubectl get nodes -o
 custom-columns=NAME:.metadata.name,ARCH:.status.nodeInfo.architecture` —
 and swap `amd64` for `arm64` if needed.)
+
+> **Pin the version, don't use `/releases/latest/download/...`.** This
+> Task carries git-push credentials to `deployment-repo`; a `latest` URL
+> means every real pipeline run downloads and executes whatever the
+> upstream project happens to have tagged as latest *at that moment*, with
+> no review and no way to know what changed between two runs. Pin an
+> explicit release tag (bump it deliberately, like any other dependency),
+> and check https://github.com/mikefarah/yq/releases for the current tag
+> when setting this up rather than reusing an old pin indefinitely.
 
 Related: **don't** also `microdnf install curl` on top of this — UBI
 minimal ships `curl-minimal` by default, and installing the full `curl`
@@ -573,7 +582,7 @@ system is stable, not just "worked once."
 | 2 | `failed to scope GitHub token as repo with pattern ... does not exist in namespace` | `github_app_token_scope_repos` target has no `Repository` CR of its own | Create a minimal `Repository` CR for the scoped repo too |
 | 3 | `failed to scope GitHub token as repo scoped key secret-github-app-token-scoped is enabled` | Cluster-wide configmap flag blocks cross-repo scoping | `kubectl patch configmap pipelines-as-code -n pipelines-as-code --type=merge -p '{"data":{"secret-github-app-token-scoped":"false"}}'` |
 | 4 | Custom Task's pod fails to create: `secretKeyRef.name: Invalid value: "{{ git_auth_secret }}"` | `{{ }}` substitution doesn't reach inside an inlined custom Task's `env` block | Read the token from the `basic-auth` workspace file instead of an env var |
-| 5 | `microdnf install -y git yq` → `No package matches 'yq'` | `yq` isn't a UBI package; atomic transaction also skips `git` | Install `git` alone; download the `yq` static binary directly |
+| 5 | `microdnf install -y git yq` → `No package matches 'yq'` | `yq` isn't a UBI package; atomic transaction also skips `git` | Install `git` alone; download a **pinned-version** `yq` static binary directly |
 | 6 | `buildah` push fails despite a Secret existing | Secret keyed `.dockerconfigjson` (from `create secret docker-registry`) but the Task reads `config.json` | Use `kubectl create secret generic ... --from-file=config.json=...` |
 | 7 | `buildah` push fails: `permission_denied: token does not match expected scopes` | PAT missing `write:packages` | Reissue the PAT with `write:packages` |
 | 8 | Task pod stuck `Pending` forever, `FailedMount` on a Secret that's unrelated to that task | `Coschedule: workspaces` requires all PipelineRun-level workspace secrets to exist before any task starts | Create the missing secret, or delete and retry once it exists |
@@ -583,6 +592,14 @@ system is stable, not just "worked once."
 
 ## Security notes (learned the hard way)
 
+- **Pin external binary downloads in any Task that carries write
+  credentials**, not just Docker base images. `update-deployment-tag.yaml`
+  downloads `yq` at every run and holds a git-push token to
+  `deployment-repo` in the same step — a `.../releases/latest/download/...`
+  URL means that Task's behavior (and its supply-chain trust boundary) can
+  change on any upstream release, silently, with a live credential in
+  scope. Pin an explicit version and bump it deliberately, the same as any
+  other dependency.
 - **Never verify a Secret's contents with a command that prints values**
   (`kubectl get secret ... -o jsonpath='{.data}'`). Use `kubectl describe
   secret` for key names only.

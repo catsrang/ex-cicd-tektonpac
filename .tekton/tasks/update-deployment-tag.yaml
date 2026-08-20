@@ -15,7 +15,7 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         microdnf install -y git >/dev/null
-        curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+        curl -sL "https://github.com/mikefarah/yq/releases/download/v4.53.4/yq_linux_amd64" -o /usr/local/bin/yq
         chmod +x /usr/local/bin/yq
         GITHUB_TOKEN=$(cat "$(workspaces.basic-auth.path)/git-provider-token")
         REPO_DIR=$(mktemp -d)
