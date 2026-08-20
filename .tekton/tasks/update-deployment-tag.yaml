@@ -11,16 +11,13 @@ spec:
   steps:
     - name: update-and-push
       image: registry.access.redhat.com/ubi9/ubi-minimal
-      env:
-        - name: GITHUB_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: "{{ git_auth_secret }}"
-              key: git-provider-token
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        microdnf install -y git yq >/dev/null
+        microdnf install -y git >/dev/null
+        curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+        chmod +x /usr/local/bin/yq
+        GITHUB_TOKEN=$(cat "$(workspaces.basic-auth.path)/git-provider-token")
         REPO_DIR=$(mktemp -d)
         git clone "https://x-access-token:${GITHUB_TOKEN}@$(echo $(params.deployment-repo-url) | sed 's#https://##')" "$REPO_DIR"
         cd "$REPO_DIR"
