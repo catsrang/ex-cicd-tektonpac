@@ -33,7 +33,7 @@ spec:
           - name: revision
             value: $(params.revision)
 
-      - name: maven-test
+      - name: maven-package
         runAfter: ["fetch-repository"]
         taskRef:
           name: maven
@@ -44,10 +44,10 @@ spec:
             workspace: maven-settings
         params:
           - name: GOALS
-            value: ["test"]
+            value: ["package"]
 
       - name: build-image
-        runAfter: ["maven-test"]
+        runAfter: ["maven-package"]
         taskRef:
           name: buildah
         workspaces:
