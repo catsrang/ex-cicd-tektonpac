@@ -1,0 +1,29 @@
+# Standalone run — PAC does not read tekton_ci/, so nothing here is templated.
+# Edit repo_url / revision below, then:
+#   kubectl apply  -n cicd-demo -f tekton_ci/task.yaml -f tekton_ci/pipeline.yaml
+#   kubectl create -n cicd-demo -f tekton_ci/pipelinerun.yaml
+# revision (branch or commit SHA) must contain the runtime-only Dockerfile.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: ex-cicd-tektonpac-ci-
+spec:
+  pipelineRef:
+    name: ex-cicd-tektonpac-ci
+  params:
+    - name: repo_url
+      value: https://github.com/catsrang/ex-cicd-tektonpac.git
+    - name: revision
+      value: main
+  workspaces:
+    - name: build-mem
+      emptyDir:
+        medium: Memory
+        sizeLimit: 2Gi
+    - name: shared
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi

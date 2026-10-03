@@ -1,0 +1,68 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clone-build-memory
+spec:
+  description: >-
+    Clone and Maven-build entirely on the build-mem workspace (bind it to a
+    memory-backed emptyDir), then copy only the image build context (jar +
+    Dockerfile) to the output workspace (bind it to the PVC shared with the
+    image-build task). All three steps share one pod, which is what keeps
+    the emptyDir alive between clone and build.
+  params:
+    - name: repo_url
+    - name: revision
+    - name: jar_path
+      description: Repo-relative path of the jar produced by `mvn package`.
+      default: target/demo-0.0.1-SNAPSHOT.jar
+  workspaces:
+    - name: build-mem
+    - name: output
+  stepTemplate:
+    image: registry.access.redhat.com/ubi9/openjdk-17:latest
+    # One UID for all steps: build must write target/ into the tree clone created.
+    securityContext:
+      runAsUser: 0
+  steps:
+    - name: clone
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        microdnf install -y git >/dev/null
+        cd "$(workspaces.build-mem.path)"
+        git init -q .
+        git remote add origin "$(params.repo_url)"
+        git fetch -q --depth 1 origin "$(params.revision)"
+        git checkout -q FETCH_HEAD
+        echo "checked out $(git rev-parse HEAD)"
+
+    - name: build
+      workingDir: $(workspaces.build-mem.path)
+      # tmpfs pages of build-mem are charged to this limit too, so the heap is
+      # capped below it and the Maven local repo is kept off the workspace.
+      computeResources:
+        requests:
+          memory: 2Gi
+        limits:
+          memory: 2Gi
+      env:
+        - name: MAVEN_OPTS
+          value: "-Xmx768m"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mvn -B -Dmaven.repo.local=/tmp/m2 package
+
+    - name: copy
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        SRC="$(workspaces.build-mem.path)"
+        OUT="$(workspaces.output.path)"
+        JAR="$(params.jar_path)"
+        test -f "$SRC/$JAR" || { echo "jar not found: $JAR" >&2; exit 1; }
+        mkdir -p "$OUT/$(dirname "$JAR")"
+        cp "$SRC/$JAR" "$OUT/$JAR"
+        cp "$SRC/Dockerfile" "$OUT/Dockerfile"
+        chmod -R a+rX "$OUT"
+        ls -lR "$OUT"
