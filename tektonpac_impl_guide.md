@@ -26,7 +26,7 @@ line to find the matching Gotcha before moving on.
                               v
                       [PipelineRun in cicd-demo namespace]
                               |
-        pr.yaml: git-clone -> maven test -> buildah build (no push)
+        pr.yaml: git-clone -> maven package -> buildah build (no push)
         push.yaml: git-clone -> maven package -> buildah build+push -> update-deployment-tag
                               |                                            |
                               v                                            v
@@ -39,10 +39,9 @@ target), one GitHub App, one PAC install, one `cicd-demo` namespace.
 
 ## Prerequisites
 
-- A Kubernetes/k3s cluster with **Tekton Pipelines** already installed.
-- `kubectl` pointed at that cluster.
-- `tkn` + `tkn-pac` CLI (`tkn-pac bootstrap` needs it; you can install
-  manually without it, but it's much more painful).
+- A Kubernetes/k3s cluster, `cluster-admin` privileges on it, and `kubectl`
+  pointed at it. Tekton Pipelines itself, plus the `tkn`/`tkn-pac` CLIs, are
+  installed in Step 1 below — no need to have them already.
 - `gh` CLI, authenticated (`gh auth login`, then `gh auth status` to
   confirm — a stale/invalid token is a common failure mode, see
   Gotcha #0 below).
@@ -57,14 +56,14 @@ Track completion at a glance; each box maps to a numbered step below and
 is only checked when its **verification** passes, not just when its
 commands run without error.
 
-- [ ] **Step 1** — PAC controller/webhook/watcher installed, all `1/1` healthy
+- [ ] **Step 1** — Tekton Pipelines, `tkn`, `tkn-pac`, and PAC controller/webhook/watcher all installed, all `1/1` healthy
 - [ ] **Step 2** — Public HTTPS endpoint reaches the controller (`200` from *outside* the cluster)
 - [ ] **Step 3** — GitHub App exists; `pipelines-as-code-secret` has all 3 keys
 - [ ] **Step 3a** (Gotcha #1) — App's repo-access list contains **both** repos, confirmed by a live webhook test, not just the settings page
 - [ ] **Step 4** — `deployment-repo` has a `main` branch with the chart skeleton pushed
 - [ ] **Step 5** — **Both** `Repository` CRs applied and `tkn pac describe` resolves cleanly
 - [ ] **Step 5a** (Gotchas #2/#3) — a real event shows `"Github token scope extended to [...]"`, not a `failed to scope` error
-- [ ] **Step 6** — `mvn test` and `docker build` both succeed locally, independent of any pipeline
+- [ ] **Step 6** — `mvn package` and `docker build` both succeed locally, independent of any pipeline
 - [ ] **Step 7** — `.tekton/*.yaml` pass `--dry-run=client` and `tkn pac resolve`
 - [ ] **Step 8** — `ghcr-credentials` Secret exists with key `config.json`, built from a `write:packages`-scoped PAT
 - [ ] **Step 9** — Local dry run: `pr.yaml` completes (`{{ pull_request_number }}` aside); `push.yaml` fails only for an expected/understood reason
@@ -72,10 +71,116 @@ commands run without error.
 
 ---
 
-## Step 1 — Install PAC on the cluster
+## Step 1 — Install Tekton Pipelines, the CLIs, and PAC on the cluster
 
-- [ ] Apply the release manifest
-- [ ] Wait for all three deployments to become `Available`
+- [ ] **1a.** Check whether Tekton Pipelines is already on the cluster;
+      install it (pinned version) if not
+- [ ] **1b.** Install the `tkn` CLI
+- [ ] **1c.** Install the `tkn-pac` CLI
+- [ ] **1d.** Apply the PAC release manifest
+- [ ] Wait for all deployments in both `tekton-pipelines` and
+      `pipelines-as-code` to become `Available`
+
+> Steps 1a–1c reflect the upstream projects' current official install docs
+> (checked 2026-08-22 against `tektoncd/pipeline`, `tektoncd/cli`, and
+> `tektoncd/pipelines-as-code` directly), not a run captured from this
+> project — this project's cluster already had all three preinstalled by
+> other means. 1d *is* the real captured command, unchanged. Re-check each
+> project's `/releases` page for the current version tag before you pin one
+> below; don't reuse these version numbers indefinitely.
+
+### 1a — Tekton Pipelines (PAC's own prerequisite)
+
+Check first — don't reinstall if it's already there:
+```bash
+kubectl get deployment -n tekton-pipelines
+```
+If that returns `No resources found` (or the namespace doesn't exist), install
+it. Pin an explicit release instead of the `latest` manifest URL — same
+reasoning as Gotcha #5's `yq` pin below: an unpinned URL means the exact thing
+you're applying to the cluster can change out from under you between two
+readings of this guide. Check
+[github.com/tektoncd/pipeline/releases](https://github.com/tektoncd/pipeline/releases)
+for the current tag (`v1.15.0` as of this writing):
+```bash
+kubectl apply --filename https://infra.tekton.dev/tekton-releases/pipeline/previous/v1.15.0/release.yaml
+kubectl -n tekton-pipelines wait --for=condition=Available --timeout=180s deployment --all
+```
+
+**Verify:**
+```bash
+kubectl get deployment -n tekton-pipelines
+```
+**Expected**: `tekton-pipelines-controller` and `tekton-pipelines-webhook` at
+minimum, `READY 1/1` (some clusters also run `tekton-events-controller` /
+`tekton-dashboard` alongside, installed separately — not required by PAC).
+
+**If it fails:** same failure mode as 1d below — a deployment stuck below
+`1/1` for more than a minute or two usually means an image pull problem or a
+resource constraint; check `kubectl describe deployment <name> -n
+tekton-pipelines` and `kubectl get events -n tekton-pipelines
+--sort-by=.lastTimestamp` for the actual reason rather than re-running
+`apply`.
+
+### 1b — `tkn` CLI (Tekton Pipelines CLI)
+
+macOS:
+```bash
+brew install tektoncd-cli
+```
+Linux (no Homebrew) — pin the version, matching the tag you check at
+[github.com/tektoncd/cli/releases](https://github.com/tektoncd/cli/releases)
+(`v0.46.0` as of this writing; swap `x86_64` for `aarch64` on ARM):
+```bash
+curl -LO https://github.com/tektoncd/cli/releases/download/v0.46.0/tkn_0.46.0_Linux_x86_64.tar.gz
+sudo tar xvzf tkn_0.46.0_Linux_x86_64.tar.gz -C /usr/local/bin/ tkn
+```
+
+**Verify:**
+```bash
+tkn version
+```
+**Expected**: prints a `Client version: 0.46.0`-shaped line with no error (a
+`Pipeline version` line may also print if `kubectl` context is already
+pointed at a cluster with Tekton Pipelines installed).
+
+**If it fails:** `command not found` right after a tarball install means
+`/usr/local/bin` isn't on `$PATH`, or the wrong OS/arch tarball got
+extracted — re-check `uname -m` against the asset name.
+
+### 1c — `tkn-pac` CLI (Pipelines-as-Code plugin)
+
+This is a **separate binary/cask from `tkn`** above, despite the similar
+name — `tkn-pac bootstrap` (Step 3) and `tkn-pac describe`/`resolve` (Steps
+5–9) all specifically need this one.
+
+macOS (Homebrew *cask*, not a plain formula — and the tap needs an explicit
+trust step on Homebrew 6.0+):
+```bash
+brew tap openshift-pipelines/pipelines-as-code
+brew trust openshift-pipelines/pipelines-as-code
+brew install --cask openshift-pipelines/pipelines-as-code/tektoncd-pac
+xattr -d com.apple.quarantine "$(brew --prefix)/bin/tkn-pac"   # Gatekeeper, first run only
+```
+Linux (no Homebrew) — pin the version, matching the tag you check at
+[github.com/tektoncd/pipelines-as-code/releases](https://github.com/tektoncd/pipelines-as-code/releases)
+(`v0.50.0` as of this writing):
+```bash
+curl -LO https://github.com/tektoncd/pipelines-as-code/releases/download/v0.50.0/tkn-pac_0.50.0_linux_x86_64.tar.gz
+sudo tar xvzf tkn-pac_0.50.0_linux_x86_64.tar.gz -C /usr/local/bin/ tkn-pac
+```
+
+**Verify:**
+```bash
+tkn-pac version
+```
+**Expected**: prints the client version with no error.
+
+**If it fails:** `brew install --cask` failing with an "untrusted tap" error
+means the `brew trust` line above was skipped. A `command not found` after
+the Linux tarball path is the same `$PATH`/arch check as 1b.
+
+### 1d — Install PAC itself
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/tektoncd/pipelines-as-code/stable/release.k8s.yaml
@@ -181,7 +286,8 @@ expected status is on your setup.)
 
 ## Step 3 — Create the GitHub App
 
-- [ ] Run `tkn-pac bootstrap github-app` (or the manual App-creation flow)
+- [ ] Run `tkn-pac bootstrap github-app`, **or** create the App manually
+      via the GitHub UI and build the Secret by hand (both below)
 - [ ] Confirm the cluster secret has all 3 expected keys
 - [ ] Disable "SSL verification" on the App's webhook settings if using a self-signed cert
 - [ ] **Do not install the App yet** — read Gotcha #1 first, then install once, correctly
@@ -198,7 +304,63 @@ local relay page; click through to GitHub's App-manifest flow, click
 **Create GitHub App**. It creates the App *and* the cluster secret in one
 shot.
 
-**Verify the secret exists with the right keys:**
+**Manual (if `tkn-pac bootstrap` isn't an option** — no browser reachable
+from this machine, the local relay page can't reach GitHub, or you want
+explicit control over the App's permissions instead of trusting the
+manifest):
+
+1. Go to `https://github.com/settings/apps/new` (personal account) or
+   `https://github.com/organizations/<org>/settings/apps/new` (org-owned
+   App — use this if either repo lives in an org, not a personal account).
+2. Fill in:
+   - **GitHub App name**: any globally-unique name.
+   - **Homepage URL**: anything valid, e.g. `https://github.com/<org>`.
+   - **Webhook → Active**: checked. **Webhook URL**:
+     `https://<your-host>/pac` (same endpoint verified in Step 2).
+   - **Webhook secret**: generate one yourself and save it —
+     `openssl rand -hex 20` — you'll need this exact value in the Secret
+     below.
+   - If using a self-signed cert (no cert-manager), also uncheck **SSL
+     verification** further down the page — same reason as the automated
+     path, and easy to miss since it's below the fold.
+3. **Repository permissions** (Metadata is the only read-only one; every
+   other one PAC needs is Read & write):
+   - Checks: Read & write
+   - Contents: Read & write
+   - Issues: Read & write
+   - Metadata: Read-only
+   - Pull requests: Read & write
+   - Commit statuses: Read & write
+4. **Subscribe to events**: Check the boxes for `Check run`, `Check
+   suite`, `Commit comment`, `Issue comment`, `Pull request`, `Push`. (If
+   a permission from step 3 hasn't been granted yet, GitHub hides its
+   matching event checkbox — grant the permission first, then come back
+   to this section.)
+5. **Where can this GitHub App be installed?**: "Only on this account" is
+   fine — you're installing it yourself in Gotcha #1 below, not
+   distributing it publicly.
+6. Click **Create GitHub App**. On the App's page that follows:
+   - Note the **App ID** shown near the top.
+   - Scroll to **Private keys** → **Generate a private key** — downloads
+     a `.pem` file. Treat it like any other credential (Security notes
+     at the bottom of this guide apply here too).
+
+**Build the cluster secret from these three values:**
+```bash
+kubectl create secret generic pipelines-as-code-secret \
+  -n pipelines-as-code \
+  --from-literal=github-application-id=<APP_ID> \
+  --from-file=github-private-key=<path-to-downloaded-pem> \
+  --from-literal=webhook.secret=<the-secret-you-generated-in-step-2>
+
+rm -f <path-to-downloaded-pem>
+```
+The key names above (`github-application-id`, `github-private-key`,
+`webhook.secret`) must match exactly — they're read by name, not
+positionally.
+
+**Verify the secret exists with the right keys** (applies to both the
+automated and manual path):
 ```bash
 kubectl -n pipelines-as-code describe secret pipelines-as-code-secret
 ```
@@ -224,10 +386,19 @@ present and non-zero.)
 > log/terminal you're in. `describe` (above) is the safe form: key names
 > and sizes, never values.
 
-**If it fails:** `kubectl get secret pipelines-as-code-secret -n
-pipelines-as-code` returning `NotFound` after `bootstrap` reports success
-usually means the bootstrap flow was cancelled partway through the
-browser step — rerun it; it's idempotent.
+**If it fails:**
+- Automated path — `kubectl get secret pipelines-as-code-secret -n
+  pipelines-as-code` returning `NotFound` after `bootstrap` reports
+  success usually means the bootstrap flow was cancelled partway through
+  the browser step — rerun it; it's idempotent.
+- Manual path — a `describe` output missing a key or showing `0 bytes`
+  for `github-private-key` almost always means the wrong `--from-*` flag
+  was used for that value (`--from-file` for the `.pem`, `--from-literal`
+  for the App ID and webhook secret — swapping them either fails outright
+  or stores a literal file path instead of its contents). Delete and
+  recreate the Secret with `kubectl delete secret
+  pipelines-as-code-secret -n pipelines-as-code` first — there's no
+  in-place edit for a `--from-file` value.
 
 ---
 
@@ -457,7 +628,7 @@ print `false`) before assuming it's something else.
 
 - [ ] Standard Maven/Spring Boot layout (`pom.xml`, source, test, `Dockerfile`)
 - [ ] `mvn test` passes locally
-- [ ] `docker build` (or `podman build`) succeeds locally
+- [ ] `mvn package` then `docker build` (or `podman build`) succeeds locally
 
 Standard Maven/Spring Boot layout — nothing PAC-specific here. Minimal:
 `pom.xml`, `src/main/java/.../Application.java`,
@@ -484,19 +655,19 @@ INFO ... Started DemoApplicationTests in 0.481 seconds (process running for 0.74
 No `[ERROR]`/`BUILD FAILURE` output, and the process exits `0`.
 
 ```bash
+mvn package                  # the Dockerfile is runtime-only: it COPYs target/*.jar
 docker build -t demo-app .   # or: podman build -t demo-app .
 ```
-**Expected**: image builds through both stages (`build` and the runtime
-stage) and ends with `Successfully tagged demo-app:latest` (Docker) or
-equivalent success output (Podman).
+**Expected**: the single runtime stage builds (no Maven runs inside the
+image build) and ends with `Successfully tagged demo-app:latest` (Docker)
+or equivalent success output (Podman).
 
 **If it fails:** a `mvn test` failure here is a real app bug — fix it
 before touching any pipeline YAML; a pipeline will only ever reproduce
 what `mvn test` already does locally, it can't fix a broken test. A
-`docker build` failure at the `mvn -B -DskipTests package` step inside
-the Dockerfile most often means a Java-version mismatch between your
-local `mvn test` environment and the build stage's base image — check
-`java -version` locally against the Dockerfile's `FROM` tag.
+`docker build` failure at `COPY target/demo-0.0.1-SNAPSHOT.jar` means the
+jar is not in the build context — run `mvn package` first, and check the
+filename still matches `artifactId`/`version` in `pom.xml`.
 
 ---
 
@@ -534,7 +705,7 @@ example verbatim. Two things worth checking specifically:
   common "point at an unreachable registry" trick for a no-push PR
   pipeline — check before copying an older recipe's workaround.)
 
-**`pr.yaml`** — `pull_request` → `main`: `git-clone` → `maven test` →
+**`pr.yaml`** — `pull_request` → `main`: `git-clone` → `maven package` →
 `buildah` build with `SKIP_PUSH: "true"`.
 
 **`push.yaml`** — `push` → `main`: `git-clone` → `maven package` →
@@ -768,7 +939,7 @@ kubectl create -f /tmp/pr-resolved.yaml -n cicd-demo
 kubectl get pipelinerun -n cicd-demo -w
 ```
 
-**Expected**: `fetch-repository` and `maven-test` (or `maven-build`)
+**Expected**: `fetch-repository` and `maven-package`
 **Succeeded**. The `buildah` step, *if* its `IMAGE` param uses
 `{{ pull_request_number }}`, will fail — real example:
 ```
