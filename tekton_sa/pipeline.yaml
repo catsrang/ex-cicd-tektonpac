@@ -1,0 +1,80 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: ex-cicd-tektonpac-ci-sa
+spec:
+  params:
+    - name: repo_url
+    - name: revision
+    - name: image
+      default: ghcr.io/catsrang/demo-app:ci
+  workspaces:
+    # Scratch space for the whole run; bind to a memory emptyDir. One task
+    # (one pod) uses it, so no volume has to be shared between tasks.
+    - name: build-mem
+  tasks:
+    - name: clone-build-image
+      workspaces:
+        - name: build-mem
+          workspace: build-mem
+      params:
+        - name: repo_url
+          value: $(params.repo_url)
+        - name: revision
+          value: $(params.revision)
+        - name: image
+          value: $(params.image)
+      taskSpec:
+        description: >-
+          Clone, Maven-build and image-build in one pod, entirely on the
+          build-mem workspace (bind it to a memory-backed emptyDir). An
+          emptyDir is per-pod, so keeping every stage as a step of this one
+          task is what lets them share it — no PVC and no hand-off. Each step
+          is a StepAction from stepactions/; this spec only wires params into
+          them. A StepAction declares no workspaces, so every step is passed
+          the workspace path. The image is built but not pushed.
+        params:
+          - name: repo_url
+          - name: revision
+          - name: image
+        workspaces:
+          - name: build-mem
+        steps:
+          - name: clone
+            ref:
+              name: sa-git-clone
+            params:
+              - name: workspace_path
+                value: $(workspaces.build-mem.path)
+              - name: repo_url
+                value: $(params.repo_url)
+              - name: revision
+                value: $(params.revision)
+
+          - name: build
+            ref:
+              name: sa-maven-package
+            # Everything on build-mem is tmpfs and is charged to memory,
+            # including the Maven local repo written by this step, so the
+            # heap is capped below the limit. A StepAction cannot hold
+            # computeResources, which is why the limit is here and the heap
+            # is passed in next to it.
+            computeResources:
+              requests:
+                memory: 2Gi
+              limits:
+                memory: 2Gi
+            params:
+              - name: workspace_path
+                value: $(workspaces.build-mem.path)
+              - name: maven_opts
+                value: "-Xmx768m"
+
+          - name: image
+            ref:
+              name: sa-buildah-build
+            params:
+              - name: workspace_path
+                value: $(workspaces.build-mem.path)
+              - name: image
+                value: $(params.image)

@@ -9,3 +9,6 @@ target/
 
 # OS
 .DS_Store
+
+# ai topics
+topic/

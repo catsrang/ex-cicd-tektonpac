@@ -1,23 +1,22 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: clone-build-memory
+  name: clone-build-image-memory
 spec:
   description: >-
-    Clone and Maven-build entirely on the build-mem workspace (bind it to a
-    memory-backed emptyDir), then copy only the image build context (jar +
-    Dockerfile) to the output workspace (bind it to the PVC shared with the
-    image-build task). All three steps share one pod, which is what keeps
-    the emptyDir alive between clone and build.
+    Clone, Maven-build and image-build in one pod, entirely on the build-mem
+    workspace (bind it to a memory-backed emptyDir). An emptyDir is per-pod,
+    so keeping every stage as a step of this one Task is what lets them share
+    it — no PVC and no hand-off. The workspace holds three sibling
+    directories: src (the clone and the image build context), m2 (Maven
+    local repository) and containers (buildah storage). The image is built
+    but not pushed.
   params:
     - name: repo_url
     - name: revision
-    - name: jar_path
-      description: Repo-relative path of the jar produced by `mvn package`.
-      default: target/demo-0.0.1-SNAPSHOT.jar
+    - name: image
   workspaces:
     - name: build-mem
-    - name: output
   stepTemplate:
     image: registry.access.redhat.com/ubi9/openjdk-17:latest
     # One UID for all steps: build must write target/ into the tree clone created.
@@ -29,7 +28,9 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         microdnf install -y git >/dev/null
-        cd "$(workspaces.build-mem.path)"
+        W="$(workspaces.build-mem.path)"
+        mkdir -p "$W/src" "$W/m2" "$W/containers"
+        cd "$W/src"
         git init -q .
         git remote add origin "$(params.repo_url)"
         git fetch -q --depth 1 origin "$(params.revision)"
@@ -37,9 +38,10 @@ spec:
         echo "checked out $(git rev-parse HEAD)"
 
     - name: build
-      workingDir: $(workspaces.build-mem.path)
-      # tmpfs pages of build-mem are charged to this limit too, so the heap is
-      # capped below it and the Maven local repo is kept off the workspace.
+      workingDir: $(workspaces.build-mem.path)/src
+      # Everything on build-mem is tmpfs and is charged to memory, including
+      # the Maven local repo written by this step, so the heap is capped
+      # below the limit.
       computeResources:
         requests:
           memory: 2Gi
@@ -51,18 +53,28 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        mvn -B -Dmaven.repo.local=/tmp/m2 package
+        mvn -B -Dmaven.repo.local="$(workspaces.build-mem.path)/m2" package
 
-    - name: copy
+    - name: image
+      image: quay.io/buildah/stable:v1
+      workingDir: $(workspaces.build-mem.path)/src
+      # buildah's overlay storage driver needs a privileged container.
+      securityContext:
+        privileged: true
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        SRC="$(workspaces.build-mem.path)"
-        OUT="$(workspaces.output.path)"
-        JAR="$(params.jar_path)"
-        test -f "$SRC/$JAR" || { echo "jar not found: $JAR" >&2; exit 1; }
-        mkdir -p "$OUT/$(dirname "$JAR")"
-        cp "$SRC/$JAR" "$OUT/$JAR"
-        cp "$SRC/Dockerfile" "$OUT/Dockerfile"
-        chmod -R a+rX "$OUT"
-        ls -lR "$OUT"
+        W="$(workspaces.build-mem.path)"
+        JAR="$(sed -n 's/^COPY \(target\/[^ ]*\.jar\) .*/\1/p' Dockerfile)"
+        if [ -z "$JAR" ] || [ ! -f "$JAR" ]; then
+          echo "jar expected by Dockerfile not found: ${JAR:-<no COPY target/*.jar line>}" >&2
+          exit 1
+        fi
+        # Storage lives next to src, not inside it, so it is not part of the build context.
+        buildah --root "$W/containers/root" --runroot "$W/containers/run" \
+          --storage-driver=overlay bud --format=oci --tls-verify=true \
+          -f Dockerfile -t "$(params.image)" .
+        echo "Push skipped"
+        echo "tmpfs usage (MB):"
+        du -sm "$W/src" "$W/m2" "$W/containers"
+        df -m "$W" | tail -1

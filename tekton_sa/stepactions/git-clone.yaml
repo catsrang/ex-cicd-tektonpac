@@ -1,0 +1,39 @@
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: sa-git-clone
+spec:
+  description: >-
+    Shallow-clone one revision into <workspace_path>/src and create the
+    sibling directories the later steps use: m2 (Maven local repository) and
+    containers (buildah storage).
+  params:
+    - name: workspace_path
+      description: Root of the scratch workspace; a StepAction declares no workspaces, so the Task passes the path.
+    - name: repo_url
+    - name: revision
+      description: Branch or commit SHA.
+  image: docker.io/alpine/git:v2.54.0
+  # Same UID as the build step, which must write target/ into this tree.
+  securityContext:
+    runAsUser: 0
+  # Params are not allowed in a StepAction script; they come in through env.
+  env:
+    - name: WORKSPACE_PATH
+      value: $(params.workspace_path)
+    - name: REPO_URL
+      value: $(params.repo_url)
+    - name: REVISION
+      value: $(params.revision)
+  script: |
+    #!/bin/sh
+    # Alpine image: git is preinstalled, the shell is busybox sh (no bash).
+    set -eu
+    W="$WORKSPACE_PATH"
+    mkdir -p "$W/src" "$W/m2" "$W/containers"
+    cd "$W/src"
+    git init -q .
+    git remote add origin "$REPO_URL"
+    git fetch -q --depth 1 origin "$REVISION"
+    git checkout -q FETCH_HEAD
+    echo "checked out $(git rev-parse HEAD)"

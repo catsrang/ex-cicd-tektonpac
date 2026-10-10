@@ -9,47 +9,20 @@ spec:
     - name: image
       default: ghcr.io/catsrang/demo-app:ci
   workspaces:
-    # Task-local scratch space for clone + build; bind to a memory emptyDir.
+    # Scratch space for the whole run; bind to a memory emptyDir. One task
+    # (one pod) uses it, so no volume has to be shared between tasks.
     - name: build-mem
-    # The only volume shared between tasks; bind to a PVC.
-    - name: shared
   tasks:
-    - name: clone-build
+    - name: clone-build-image
       taskRef:
-        name: clone-build-memory
+        name: clone-build-image-memory
       workspaces:
         - name: build-mem
           workspace: build-mem
-        - name: output
-          workspace: shared
       params:
         - name: repo_url
           value: $(params.repo_url)
         - name: revision
           value: $(params.revision)
-
-    - name: build-image
-      runAfter: ["clone-build"]
-      # Not PAC-resolved here, so buildah is fetched by the hub resolver;
-      # pinned to the version PAC pulls for .tekton/pr.yaml.
-      taskRef:
-        resolver: hub
-        params:
-          - name: type
-            value: artifact
-          - name: catalog
-            value: tekton-catalog-tasks
-          - name: kind
-            value: task
-          - name: name
-            value: buildah
-          - name: version
-            value: "0.9"
-      workspaces:
-        - name: source
-          workspace: shared
-      params:
-        - name: IMAGE
+        - name: image
           value: $(params.image)
-        - name: SKIP_PUSH
-          value: "true"

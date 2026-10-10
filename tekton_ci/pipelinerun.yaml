@@ -3,6 +3,7 @@
 #   kubectl apply  -n cicd-demo -f tekton_ci/task.yaml -f tekton_ci/pipeline.yaml
 #   kubectl create -n cicd-demo -f tekton_ci/pipelinerun.yaml
 # revision (branch or commit SHA) must contain the runtime-only Dockerfile.
+# The whole run lives on the memory emptyDir below: no PVC is created.
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
@@ -20,10 +21,3 @@ spec:
       emptyDir:
         medium: Memory
         sizeLimit: 2Gi
-    - name: shared
-      volumeClaimTemplate:
-        spec:
-          accessModes: ["ReadWriteOnce"]
-          resources:
-            requests:
-              storage: 1Gi

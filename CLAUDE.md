@@ -35,6 +35,14 @@ kubectl apply  -n cicd-demo -f tekton_ci/task.yaml -f tekton_ci/pipeline.yaml
 kubectl create -n cicd-demo -f tekton_ci/pipelinerun.yaml   # edit repo_url / revision in the file first
 ```
 
+StepAction variant in `tekton_sa/` (also not read by PAC):
+```bash
+tekton_sa/test.sh [revision]   # apply everything, run once against a pushed revision (default main), print PASS/FAIL
+kubectl apply --dry-run=server -n cicd-demo -f tekton_sa/stepactions/ -f tekton_sa/pipeline.yaml   # schema check
+kubectl apply  -n cicd-demo -f tekton_sa/stepactions/ -f tekton_sa/pipeline.yaml   # StepActions must exist before a run starts
+kubectl create -n cicd-demo -f tekton_sa/pipelinerun.yaml   # generateName, so create (not apply)
+```
+
 There is no lint/format tooling configured beyond `mvn test`.
 
 ## Architecture
@@ -63,6 +71,12 @@ Key pieces and where they live:
 - `.tekton/tasks/update-deployment-tag.yaml` — custom Task: clones the deploy repo using PAC's short-lived `{{ git_auth_secret }}` (GitHub App installation token), patches `charts/demo-app/values.yaml`'s `image.tag` with `yq`, commits, pushes to `main`.
 - `Dockerfile` — runtime-only: it `COPY`s `target/demo-0.0.1-SNAPSHOT.jar` from the build context and compiles nothing. Every pipeline must therefore run `mvn package` *before* `buildah`; a Maven goal that stops at `test` fails one task later, at the image build, on the missing jar.
 - `tekton_ci/` — standalone (non-PAC) CI: `task.yaml` (`clone-build-memory`: clone + `mvn package` on a memory-backed workspace, then copy only the jar + `Dockerfile` to a PVC), `pipeline.yaml` (that Task → `buildah` via the hub resolver, no push), `pipelinerun.yaml` (binds a 2Gi `emptyDir{medium: Memory}` and a 1Gi PVC). Clone and build are one Task on purpose: an `emptyDir` is per-pod, so it cannot be shared between Tekton tasks — only the PVC is.
+- `tekton_sa/` — standalone (non-PAC) CI built from **StepActions**: one task, one pod, three steps (`clone` → `build` → `image`) that each `ref` a StepAction in `stepactions/` (`sa-git-clone`, `sa-maven-package`, `sa-buildah-build`); image built with buildah, not pushed. The task is embedded in `pipeline.yaml` (`ex-cicd-tektonpac-ci-sa`) as `taskSpec` — there is no `task.yaml` and no Task object, so it cannot be run or reused on its own; the reusable units are the StepActions, which stay separate objects (a StepAction cannot be embedded) and must be applied before a run. The whole run — source tree, Maven repo, buildah storage — lives on a 2Gi `emptyDir{medium: Memory}`, no PVC; that only works because it is a single task (an `emptyDir` is per-pod). The `taskSpec` holds wiring only; `pipelinerun.yaml` and `test.sh` wrap the Pipeline. StepAction rules that shaped it (Tekton v1.16, `tekton.dev/v1beta1`):
+  - A StepAction script may not contain `$(params.*)` — admission rejects it. Params go into `env`, and the script reads shell variables.
+  - A StepAction declares no workspaces; each step in the `taskSpec` passes `$(workspaces.build-mem.path)` as the `workspace_path` param.
+  - A StepAction has no `computeResources`: the 2Gi memory limit sits on the `taskSpec`'s `build` step, next to the `maven_opts` (`-Xmx768m`) value that must stay below it.
+  - A step with `ref` may not set `image`, `script`, `env` or `workingDir`; those live in the StepAction.
+  - Admission does not resolve `ref`s — a wrong StepAction or param name only fails when the TaskRun starts, so a dry-run is not enough; run `test.sh`.
 - `infra/pac/` — cluster-side, one-time setup: `install.sh`/`verify.sh` (PAC controller on vanilla K8s), `ingress.yaml` (webhook delivery via Traefik at `/pac` on the existing dashboard host), `repository.yaml` / `repository-deploy.yaml` (`Repository` CRs registering both repos with PAC), `github-app/` (App creation runbook + `create-secret.sh`).
 - Companion repo `catsrang/ex-cicd-tektonpac-deploy` is the GitOps target (`charts/demo-app/values.yaml`); it has **no `.tekton/` files** — its `Repository` CR exists purely to satisfy PAC's cross-repo token-scoping check (see Gotcha #2 below), not to trigger its own runs.
 

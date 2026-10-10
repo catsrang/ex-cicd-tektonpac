@@ -1,0 +1,42 @@
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: sa-buildah-build
+spec:
+  description: >-
+    Build the image from <workspace_path>/src/Dockerfile with buildah,
+    keeping buildah's storage under <workspace_path>/containers. The image is
+    built but not pushed.
+  params:
+    - name: workspace_path
+      description: Root of the scratch workspace, as created by sa-git-clone.
+    - name: image
+      description: Reference to tag the built image with.
+  image: quay.io/buildah/stable:v1
+  # buildah's overlay storage driver needs a privileged container.
+  securityContext:
+    runAsUser: 0
+    privileged: true
+  workingDir: $(params.workspace_path)/src
+  env:
+    - name: WORKSPACE_PATH
+      value: $(params.workspace_path)
+    - name: IMAGE
+      value: $(params.image)
+  script: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    W="$WORKSPACE_PATH"
+    JAR="$(sed -n 's/^COPY \(target\/[^ ]*\.jar\) .*/\1/p' Dockerfile)"
+    if [ -z "$JAR" ] || [ ! -f "$JAR" ]; then
+      echo "jar expected by Dockerfile not found: ${JAR:-<no COPY target/*.jar line>}" >&2
+      exit 1
+    fi
+    # Storage lives next to src, not inside it, so it is not part of the build context.
+    buildah --root "$W/containers/root" --runroot "$W/containers/run" \
+      --storage-driver=overlay bud --format=oci --tls-verify=true \
+      -f Dockerfile -t "$IMAGE" .
+    echo "Push skipped"
+    echo "tmpfs usage (MB):"
+    du -sm "$W/src" "$W/m2" "$W/containers"
+    df -m "$W" | tail -1

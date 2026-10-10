@@ -1,0 +1,30 @@
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: sa-maven-package
+spec:
+  description: >-
+    Run mvn package in <workspace_path>/src with the Maven local repository
+    at <workspace_path>/m2. A StepAction has no computeResources: the memory
+    limit is set on the Task step that references this, and maven_opts must
+    keep the heap below it.
+  params:
+    - name: workspace_path
+      description: Root of the scratch workspace, as created by sa-git-clone.
+    - name: maven_opts
+      description: Value of MAVEN_OPTS.
+      default: "-Xmx768m"
+  image: docker.io/library/maven:3.9-eclipse-temurin-17
+  # Same UID as the clone step, which created the tree.
+  securityContext:
+    runAsUser: 0
+  workingDir: $(params.workspace_path)/src
+  env:
+    - name: WORKSPACE_PATH
+      value: $(params.workspace_path)
+    - name: MAVEN_OPTS
+      value: $(params.maven_opts)
+  script: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mvn -B -Dmaven.repo.local="$WORKSPACE_PATH/m2" package
